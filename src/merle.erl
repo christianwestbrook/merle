@@ -52,7 +52,7 @@
     stats/0, stats/1, version/0, getkey/1, delete/2, set/4, add/4, replace/2,
     replace/4, cas/5, set/2, flushall/0, flushall/1, verbosity/1, add/2,
     cas/3, getskey/1, connect/0, connect/2, delete/1, disconnect/0,
-    set_counter/2, incr/2, set_counter/4, decr/2
+    set_counter/2, set_counter/4, incr/2, decr/2
 ]).
 
 %% gen_server callbacks
@@ -250,20 +250,24 @@ cas(Key, Flag, ExpTime, CasUniq, Value) ->
 	end.
 
 %% @doc increment an integer key; will return NOT_FOUND if not there
+%%      or "CLIENT_ERROR cannot increment or decrement non-numeric value" 
 incr(Key, Value) when is_atom(Key) -> incr(atom_to_list(Key), Value);
 incr(Key, Value) when is_integer(Value) -> incr(Key, integer_to_list(Value));
 incr(Key, Value) ->
         case gen_server2:call(?SERVER, {incr, {Key, Value}}) of
 	    ["NOT_FOUND"] -> not_found;
+	    ["CLIENT_ERROR cannot increment or decrement non-numeric value"] -> not_counter;
 	    [X] when is_list(X) -> list_to_integer(X)
 	end.
 
 %% @doc increment an integer key; will return NOT_FOUND if not there
+%%      or "CLIENT_ERROR cannot increment or decrement non-numeric value" 
 decr(Key, Value) when is_atom(Key) -> decr(atom_to_list(Key), Value);
 decr(Key, Value) when is_integer(Value) -> decr(Key, integer_to_list(Value));
 decr(Key, Value) ->
         case gen_server2:call(?SERVER, {decr, {Key, Value}}) of
 	    ["NOT_FOUND"] -> not_found;
+	    ["CLIENT_ERROR cannot increment or decrement non-numeric value"] -> not_counter;
 	    [X] when is_list(X) -> list_to_integer(X)
 	end.
 
