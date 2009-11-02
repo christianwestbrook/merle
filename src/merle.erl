@@ -51,7 +51,8 @@
 -export([
     stats/0, stats/1, version/0, getkey/1, delete/2, set/4, add/4, replace/2,
     replace/4, cas/5, set/2, flushall/0, flushall/1, verbosity/1, add/2,
-    cas/3, getskey/1, connect/0, connect/2, delete/1, disconnect/0, incr/2, decr/2
+    cas/3, getskey/1, connect/0, connect/2, delete/1, disconnect/0,
+    set_counter/2, incr/2, set_counter/4, decr/2
 ]).
 
 %% gen_server callbacks
@@ -166,11 +167,31 @@ set(Key, Flag, ExpTime, Value) when is_integer(Flag) ->
 set(Key, Flag, ExpTime, Value) when is_integer(ExpTime) ->
     set(Key, Flag, integer_to_list(ExpTime), Value);
 set(Key, Flag, ExpTime, Value) ->
-	case gen_server2:call(?SERVER, {set, {Key, Flag, ExpTime, Value}}) of
+	case gen_server2:call(?SERVER, {set, {Key, Flag, ExpTime, {term, Value}}}) of
 	    ["STORED"] -> ok;
 	    ["NOT_STORED"] -> not_stored;
 	    [X] -> X
 	end.
+
+%% @doc Store a key/integer value pair (for use, i.e., w/ incr/decr operations)
+%%      An alternative name/approach would be set_raw:  store raw integer & string 
+set_counter(Key, Value) ->
+    Flag = random:uniform(?RANDOM_MAX),
+    set_counter(Key, integer_to_list(Flag), "0", Value).
+set_counter(Key, Flag, ExpTime, Value) when is_atom(Key) ->
+    set_counter(atom_to_list(Key), Flag, ExpTime, Value);
+set_counter(Key, Flag, ExpTime, Value) when is_integer(Flag) ->
+    set_counter(Key, integer_to_list(Flag), ExpTime, Value);
+set_counter(Key, Flag, ExpTime, Value) when is_integer(ExpTime) ->
+    set_counter(Key, Flag, integer_to_list(ExpTime), Value);
+set_counter(Key, Flag, ExpTime, Value) when is_integer(Value) ->
+    set_counter(Key, Flag, ExpTime, integer_to_list(Value));
+set_counter(Key, Flag, ExpTime, Value) ->
+    case gen_server2:call(?SERVER, {set, {Key, Flag, ExpTime, {raw, Value}}}) of
+	["STORED"] -> ok;
+	["NOT_STORED"] -> not_stored;
+        [X] -> X
+    end.
 
 %% @doc Store a key/value pair if it doesn't already exist.
 add(Key, Value) ->
@@ -229,17 +250,21 @@ cas(Key, Flag, ExpTime, CasUniq, Value) ->
 	end.
 
 %% @doc increment an integer key; will return NOT_FOUND if not there
+incr(Key, Value) when is_atom(Key) -> incr(atom_to_list(Key), Value);
+incr(Key, Value) when is_integer(Value) -> incr(Key, integer_to_list(Value));
 incr(Key, Value) ->
         case gen_server2:call(?SERVER, {incr, {Key, Value}}) of
 	    ["NOT_FOUND"] -> not_found;
-	    [X] -> X
+	    [X] when is_list(X) -> list_to_integer(X)
 	end.
 
 %% @doc increment an integer key; will return NOT_FOUND if not there
+decr(Key, Value) when is_atom(Key) -> decr(atom_to_list(Key), Value);
+decr(Key, Value) when is_integer(Value) -> decr(Key, integer_to_list(Value));
 decr(Key, Value) ->
         case gen_server2:call(?SERVER, {decr, {Key, Value}}) of
 	    ["NOT_FOUND"] -> not_found;
-	    [X] -> X
+	    [X] when is_list(X) -> list_to_integer(X)
 	end.
 
 %% @doc connect to memcached with defaults
@@ -305,15 +330,18 @@ handle_call({delete, {Key, Time}}, _From, Socket) ->
     ),
     {reply, Reply, Socket};
 
-handle_call({set, {Key, Flag, ExpTime, Value}}, _From, Socket) ->
-	Bin = term_to_binary(Value),
-	Bytes = integer_to_list(size(Bin)),
+handle_call({set, {Key, Flag, ExpTime, {SetMode, Value}}}, _From, Socket) ->
+        BinValue = case SetMode of
+		       raw -> list_to_binary(Value);
+		       term -> term_to_binary(Value)
+		   end,
+	Bytes = integer_to_list(size(BinValue)),
     Reply = send_storage_cmd(
         Socket,
         iolist_to_binary([
             <<"set ">>, Key, <<" ">>, Flag, <<" ">>, ExpTime, <<" ">>, Bytes
         ]),
-        Bin
+        BinValue
     ),
     {reply, Reply, Socket};
 
@@ -360,7 +388,6 @@ handle_call({incr, {Key, Value}}, _From, Socket) ->
 handle_call({decr, {Key, Value}}, _From, Socket) ->
     Reply = send_generic_cmd(Socket, iolist_to_binary([<<"decr ">>, Key, <<" ">>, Value])),
     {reply, Reply, Socket}.
-
 
 %% @private
 handle_cast(_Msg, State) -> {noreply, State}.
@@ -458,6 +485,10 @@ recv_complex_gets_reply(Socket) ->
 %% @private
 %% @doc recieve loop to get all data; attempts binary_to_term on value but
 %%      no longer requires value to be erlang binary format (ie incr/decr)
+%% Alternatively, could continue to always use term_from_binary here,
+%%  ... and use instead new function (get_data_raw) within incr/decr for this:
+%%      -- this would avoid the attempts to parse any value that fails 
+%%         binary_to_term as an integer
 get_data(Socket, Bin, Bytes, Len) when Len < Bytes + 7->
     receive
         {tcp, Socket, Data} ->
