@@ -51,7 +51,7 @@
 -export([
     stats/0, stats/1, version/0, getkey/1, delete/2, set/4, add/4, replace/2,
     replace/4, cas/5, set/2, flushall/0, flushall/1, verbosity/1, add/2,
-    cas/3, getskey/1, connect/0, connect/2, delete/1, disconnect/0
+    cas/3, getskey/1, connect/0, connect/2, delete/1, disconnect/0, incr/2, decr/2
 ]).
 
 %% gen_server callbacks
@@ -228,6 +228,20 @@ cas(Key, Flag, ExpTime, CasUniq, Value) ->
 	    [X] -> X
 	end.
 
+%% @doc increment an integer key; will return NOT_FOUND if not there
+incr(Key, Value) ->
+        case gen_server2:call(?SERVER, {incr, {Key, Value}}) of
+	    ["NOT_FOUND"] -> not_found;
+	    [X] -> X
+	end.
+
+%% @doc increment an integer key; will return NOT_FOUND if not there
+decr(Key, Value) ->
+        case gen_server2:call(?SERVER, {decr, {Key, Value}}) of
+	    ["NOT_FOUND"] -> not_found;
+	    [X] -> X
+	end.
+
 %% @doc connect to memcached with defaults
 connect() ->
 	connect(?DEFAULT_HOST, ?DEFAULT_PORT).
@@ -339,7 +353,14 @@ handle_call({cas, {Key, Flag, ExpTime, CasUniq, Value}}, _From, Socket) ->
         ]),
         Bin
     ),
+    {reply, Reply, Socket};
+handle_call({incr, {Key, Value}}, _From, Socket) ->
+    Reply = send_generic_cmd(Socket, iolist_to_binary([<<"incr ">>, Key, <<" ">>, Value])),
+    {reply, Reply, Socket};
+handle_call({decr, {Key, Value}}, _From, Socket) ->
+    Reply = send_generic_cmd(Socket, iolist_to_binary([<<"decr ">>, Key, <<" ">>, Value])),
     {reply, Reply, Socket}.
+
 
 %% @private
 handle_cast(_Msg, State) -> {noreply, State}.
@@ -435,7 +456,8 @@ recv_complex_gets_reply(Socket) ->
     end.
 
 %% @private
-%% @doc recieve loop to get all data
+%% @doc recieve loop to get all data; attempts binary_to_term on value but
+%%      no longer requires value to be erlang binary format (ie incr/decr)
 get_data(Socket, Bin, Bytes, Len) when Len < Bytes + 7->
     receive
         {tcp, Socket, Data} ->
@@ -447,4 +469,12 @@ get_data(Socket, Bin, Bytes, Len) when Len < Bytes + 7->
     end;
 get_data(_, Data, Bytes, _) ->
 	<<Bin:Bytes/binary, "\r\nEND\r\n">> = Data,
-    binary_to_term(Bin).
+    case catch binary_to_term(Bin) of
+	{'EXIT', {badarg, _}} ->
+	    L = binary_to_list(Bin),
+	    case catch list_to_integer(L) of
+		{'EXIT', {badarg, _}} -> L;
+		I when is_integer(I) -> I
+	    end;
+	T -> T
+    end.
